@@ -58,9 +58,10 @@ python3 bleeparr.py --input "testvideo.mkv" --boost-db 6 --fallback-subtitle-mut
 
 ⸻
 
-❤️ Thanks
+❤️ Thanks (This is my first ever attempt at developing code. Full disclosure, it's pretty much 100% written by ChatGPT)
 
 Bleeparr uses:
+
 	•	Faster-Whisper
 	•	Subliminal
 	•	FFmpeg
