@@ -9,6 +9,10 @@ It uses a smart multi-layered strategy:
 - Final fallback to mute entire subtitle segments if needed
 - Fast, safe, accurate censoring!
 
+Big thanks to mmguero for his awesome (and better) tools that gave me the ideas for this:
+- https://github.com/mmguero/cleanvid
+- https://github.com/mmguero/monkeyplug
+
 ---
 
 ## 🛠 Installation
