@@ -1,6 +1,7 @@
 # Bleeparr
 
-🚀 **Bleeparr** is a tool for automatically detecting and censoring profanity in videos by muting bad words based on subtitles and AI speech recognition (Whisper).
+
+🚀  **Bleeparr** is a tool for automatically detecting and censoring profanity in videos by muting bad words based on subtitles and AI speech recognition (Whisper).
 
 It uses a smart multi-layered strategy:
 - Subtitle scanning for obvious profanity
