@@ -16,30 +16,42 @@ It uses a smart multi-layered strategy:
    ```bash
    sudo apt install ffmpeg
 
-2 Install Python dependencies:
-pip3 install -r requirements.txt
+2. Install Python dependencies:
+   ```bash
+   pip3 install -r requirements.txt
 
-⸻
+---
 
-⚙️ How to Use
+## ⚙️ How to Use
 
+   ```bash
+   python3 bleeparr.py --input yourvideo.mkv
+   ```
 
-python3 bleeparr.py --input yourvideo.mkv
 
 ✅ Common options:
+
+
 	•	--boost-db 6 (default) — Boost clip audio volume before analyzing
+ 
 	•	--fallback-subtitle-mute — Mute the entire subtitle line if Whisper misses a swear
+ 
 	•	--whisper-tiered — First use Whisper small.en for speed, then retry misses with medium.en
+ 
 	•	--output-suffix "(edited by Bleeparr)" — Change output filename
+ 
 	•	--model small.en or --model medium.en — Set the Whisper model (if not using tiered mode)
 
 Example command:
+```
 python3 bleeparr.py --input "testvideo.mkv" --boost-db 6 --fallback-subtitle-mute --whisper-tiered
+```
+---
 
 
-⸻
 
 🧠 Advanced Notes
+
 	•	Subtitles required: Bleeparr will try to extract embedded subtitles, or download them automatically using Subliminal.
 	•	Audio formats: Should work with most common formats (AAC, EAC3, Vorbis, etc.)
 	•	Final Output: Video is remuxed with muted audio at swear locations.
