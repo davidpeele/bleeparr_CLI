@@ -1,0 +1,6 @@
+faster-whisper
+srt
+subliminal
+babelfish
+ffmpeg-python
+python-dotenv
