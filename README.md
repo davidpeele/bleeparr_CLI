@@ -19,7 +19,7 @@ Big thanks to mmguero for his awesome (and better) tools that gave me the ideas 
 - Whisper Multi-Model Fallback: If Whisper Small misses a known bad word, it will retry using Whisper Medium before falling back to subtitle-based muting.
 - Flexible Censorship Display: New flag --alert-censoring-off allows disabling asterisk-style censoring for debugging/logging clarity.
 - More Accurate Clip Extraction: Extracted clips are now tightly trimmed to subtitle segment times, greatly reducing Whisper processing time.
-- Soft Matching for Swears: Fuzzy matching allows detection even when Whisper uses slight word variations (e.g., fuckin vs fucking).
+- Soft Matching for Swears: Fuzzy matching allows detection even when Whisper uses slight word variations (e.g., ****in vs ****ing).
 - Better Logging: Each clip now logs the subtitle segment number and which words were found there.
 - Cleaner Output: Summary includes mute counts by detection method.
 
