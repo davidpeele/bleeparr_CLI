@@ -104,8 +104,16 @@ ALERT_CENSORING_OFF = args.alert_censoring_off
 
 if custom_temp_dir:
     base_clips_path = os.path.abspath(custom_temp_dir)
+    try:
+        os.makedirs(base_clips_path, exist_ok=True)
+    except Exception as e:
+        print(f"❌ Failed to create or access --temp-dir: {base_clips_path}")
+        print(f"Error: {e}")
+        exit(1)
 else:
     base_clips_path = os.path.dirname(os.path.abspath(INPUT_VIDEO))
+    used_custom_temp_dir = bool(custom_temp_dir)
+
 
 CLIPS_FOLDER = os.path.join(base_clips_path, "clips")
 
@@ -588,6 +596,14 @@ if __name__ == "__main__":
 
     if not retain_clips:
         cleanup_temp_clips(CLIPS_FOLDER)
+        # Optional: remove --temp-dir folder if it was custom and is now empty
+        if used_custom_temp_dir:
+            try:
+                if os.path.exists(base_clips_path) and not os.listdir(base_clips_path):
+                    os.rmdir(base_clips_path)
+                    print(f"🧹 Removed empty temp-dir folder: {base_clips_path}")
+            except Exception as e:
+                print(f"⚠️ Could not remove temp-dir folder {base_clips_path}: {e}")
     else:
         print(f"📦 Retaining clips folder as requested (--retain-clips set): {CLIPS_FOLDER}")
 
