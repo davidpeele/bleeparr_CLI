@@ -1,10 +1,49 @@
 # -----------------------------------------
-# CLI Parsing
+# Imports
 # -----------------------------------------
 
 import argparse
+import os
+import subprocess
+import srt
+import json
+import re
+import shutil
+import time
+from faster_whisper import WhisperModel
+from datetime import timedelta
+from collections import defaultdict
+from difflib import SequenceMatcher
+
+# -----------------------------------------
+# CLI Parsing
+# -----------------------------------------
 
 parser = argparse.ArgumentParser(description="Bleeparr: Automated Profanity Censorship Tool")
+
+parser.add_argument(
+    '--beep', 
+    action='store_true', 
+    help='Insert a tone/beep instead of mute'
+)
+
+parser.add_argument(
+    '--beep-mode', 
+    choices=['words', 'segments', 'both'], 
+    help='Choose beep mode: only words found by Whisper, full subtitle segments, or both (default: words)'
+)
+
+parser.add_argument(
+    '--temp-dir', 
+    type=str, 
+    help='Custom temporary directory for storing clips'
+)
+
+parser.add_argument(
+    '--retain-clips', 
+    action='store_true', 
+    help='Retain clips folder and files after processing (default: delete)'
+)
 
 parser.add_argument("--input", required=True, help="Input video file path")
 parser.add_argument("--subtitle", help="Optional subtitle file path (.srt)")
@@ -31,6 +70,13 @@ parser.add_argument("--alert-censoring-off", action="store_true", help="Disable 
 
 args = parser.parse_args()
 
+use_beep = args.beep
+beep_mode = args.beep_mode if args.beep_mode else 'words' if use_beep else None
+if not use_beep and args.beep_mode:
+    print("⚠️ Warning: --beep-mode has no effect unless --beep is also set.")
+custom_temp_dir = args.temp_dir
+retain_clips = args.retain_clips
+
 BLEEPTOOL = [p.strip().upper() for p in args.bleeptool.split("-")]
 DO_S   = "S"   in BLEEPTOOL
 DO_M   = "M"   in BLEEPTOOL
@@ -56,23 +102,13 @@ KEEP_SUBS = not args.no_keep_subs
 SWEARS_FILE = args.swears
 ALERT_CENSORING_OFF = args.alert_censoring_off
 
-CLIPS_FOLDER = "clips"
+if custom_temp_dir:
+    base_clips_path = os.path.abspath(custom_temp_dir)
+else:
+    base_clips_path = os.path.dirname(os.path.abspath(INPUT_VIDEO))
 
-# -----------------------------------------
-# Imports
-# -----------------------------------------
+CLIPS_FOLDER = os.path.join(base_clips_path, "clips")
 
-import os
-import subprocess
-import srt
-import json
-import re
-import shutil
-import time
-from faster_whisper import WhisperModel
-from datetime import timedelta
-from collections import defaultdict
-from difflib import SequenceMatcher
 
 # -----------------------------------------
 # Functions
@@ -376,13 +412,73 @@ def merge_whisper_and_subtitles(whisper_bad_words, subtitle_bad_sections, fallba
     return mute_segments, fallback_clips
 
 def build_and_run_ffmpeg(input_file, mute_points, pre_buffer_ms, post_buffer_ms, output_suffix):
-    """Build and execute ffmpeg command to mute bad sections."""
-    filters = []
-    for m in mute_points:
-        start = max(0, m["start"] - (pre_buffer_ms / 1000.0))
-        end = m["end"] + (post_buffer_ms / 1000.0)
-        filters.append(f"volume=enable='between(t,{start},{end})':volume=0")
+    """Build and execute ffmpeg command to mute or beep bad sections."""
+    output_file = os.path.splitext(input_file)[0] + f" {output_suffix}.mkv"
 
+    if use_beep:
+        filter_parts = []
+        filter_parts.append("[0:a]anull[a0]")  # input labeled as a0
+        current_label = "a0"
+
+        # Step 1: apply mute filters (volume=0 during each range)
+        for i, m in enumerate(mute_points):
+            start = max(0, m["start"] - (pre_buffer_ms / 1000.0))
+            end = m["end"] + (post_buffer_ms / 1000.0)
+            next_label = f"muted{i}"
+            filter_parts.append(
+                f"[{current_label}]volume=enable='between(t,{start},{end})':volume=0[{next_label}]"
+            )
+            current_label = next_label
+
+        # Step 2: create beeps at same times
+        beep_labels = []
+        for i, m in enumerate(mute_points):
+            start = max(0, m["start"] - (pre_buffer_ms / 1000.0))
+            end = m["end"] + (post_buffer_ms / 1000.0)
+            duration = end - start
+            delay_ms = int(start * 1000)
+
+            beep = f"beep{i}"
+            dbeep = f"dbeep{i}"
+
+            filter_parts.append(
+                f"aevalsrc=sin(2*PI*1000*t):d={duration}:s=44100[{beep}]"
+            )
+            filter_parts.append(
+                f"[{beep}]adelay={delay_ms}|{delay_ms}[{dbeep}]"
+            )
+            beep_labels.append(f"[{dbeep}]")
+
+        # Step 3: mix muted audio with all beep tracks
+        all_inputs = f"[{current_label}]" + "".join(beep_labels)
+        filter_parts.append(
+            f"{all_inputs}amix=inputs={len(beep_labels)+1}:duration=longest[outa]"
+        )
+
+        filter_complex = ";".join(filter_parts)
+        cmd = (
+            f"ffmpeg -hide_banner -loglevel error -y -i \"{input_file}\" "
+            f"-filter_complex \"{filter_complex}\" -map 0:v -map \"[outa]\" "
+            f"-c:v copy -c:a aac \"{output_file}\""
+        )
+    else:
+        # Mute only (no beep)
+        filters = []
+        for m in mute_points:
+            start = max(0, m["start"] - (pre_buffer_ms / 1000.0))
+            end = m["end"] + (post_buffer_ms / 1000.0)
+            filters.append(f"volume=enable='between(t,{start},{end})':volume=0")
+
+        filter_str = ",".join(filters)
+        cmd = (
+            f"ffmpeg -hide_banner -loglevel error -y -i \"{input_file}\" "
+            f"-af \"{filter_str}\" -c:v copy \"{output_file}\""
+        )
+
+    print(f"🔧 Running FFmpeg command to mute bad words{' with beeps' if use_beep else ''}…")
+    subprocess.run(cmd, shell=True)
+    return output_file
+    
     output_file = os.path.splitext(input_file)[0] + f" {output_suffix}.mkv"
     filter_str = ",".join(filters)
     cmd = f"ffmpeg -hide_banner -loglevel error -y -i \"{input_file}\" -af \"{filter_str}\" -c:v copy \"{output_file}\""
@@ -464,7 +560,22 @@ if __name__ == "__main__":
     print(f"🔹 {medium_hits} mutes detected by Whisper Medium fallback")
     print(f"🔹 {fallback_hits} full subtitle fallback mutes")
 
-    output_file = build_and_run_ffmpeg(INPUT_VIDEO, merged_mutes, PRE_BUFFER_MS, POST_BUFFER_MS, OUTPUT_SUFFIX)
+    whisper_mutes = [m for m in merged_mutes if not m.get("fallback")]
+    subtitle_mutes = [m for m in merged_mutes if m.get("fallback")]
+    
+    if beep_mode == "words":
+        selected_mutes = whisper_mutes
+    elif beep_mode == "segments":
+        selected_mutes = subtitle_mutes
+    elif beep_mode == "both":
+        selected_mutes = merged_mutes
+    else:
+        selected_mutes = merged_mutes  # fallback if invalid
+    
+    print(f"🎛️ Beep mode = {beep_mode}. Using {len(selected_mutes)} segment(s).")
+    
+    #this line to use selected_mutes:
+    output_file = build_and_run_ffmpeg(INPUT_VIDEO, selected_mutes, PRE_BUFFER_MS, POST_BUFFER_MS, OUTPUT_SUFFIX)
 
     if DELETE_ORIGINAL:
         os.remove(INPUT_VIDEO)
@@ -476,7 +587,10 @@ if __name__ == "__main__":
 
     # … your cleanup and other prints …
 
-    cleanup_temp_clips(CLIPS_FOLDER)
+    if not retain_clips:
+        cleanup_temp_clips(CLIPS_FOLDER)
+    else:
+        print("📦 Retaining clips folder as requested (--retain-clips set)")
 
     elapsed = time.time() - start_time
     mins = int(elapsed // 60)
