@@ -487,11 +487,10 @@ def build_and_run_ffmpeg(input_file, mute_points, pre_buffer_ms, post_buffer_ms,
     return output_file
 
 def cleanup_temp_clips(clips_folder):
-    """Delete all temporary clips after processing."""
+    """Delete the entire clips folder and all contents after processing."""
     if os.path.exists(clips_folder):
-        for file in os.listdir(clips_folder):
-            os.remove(os.path.join(clips_folder, file))
-        print("🧹 Temp clips cleaned up.")
+        shutil.rmtree(clips_folder)
+        print("🧹 Temp clips and folder cleaned up.")
 
 # -----------------------------------------
 # Main Run
@@ -590,7 +589,7 @@ if __name__ == "__main__":
     if not retain_clips:
         cleanup_temp_clips(CLIPS_FOLDER)
     else:
-        print("📦 Retaining clips folder as requested (--retain-clips set)")
+        print(f"📦 Retaining clips folder as requested (--retain-clips set): {CLIPS_FOLDER}")
 
     elapsed = time.time() - start_time
     mins = int(elapsed // 60)
