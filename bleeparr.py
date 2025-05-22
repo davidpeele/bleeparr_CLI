@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # -----------------------------------------
 # Imports
 # -----------------------------------------
@@ -129,11 +131,13 @@ def ensure_clips_folder():
             os.remove(os.path.join(CLIPS_FOLDER, f))
     else:
         os.makedirs(CLIPS_FOLDER)
-
+        
 def load_swears(swears_file):
-    """Load swear words into a set."""
-    with open(swears_file, "r") as f:
-        return set(line.strip().lower() for line in f)
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    swears_path = os.path.join(script_dir, swears_file)
+    with open(swears_path, "r") as f:
+        return set(line.strip() for line in f if line.strip())
+                
 def fuzzy_match(a: str, b: str, threshold: float = 0.8) -> bool:
     """
     Return True if strings a and b are similar enough.
@@ -223,10 +227,13 @@ def extract_clips_segment(video_file, bad_sections, boost_db=6):
     isolate exactly those subtitle‐defined segments:
       clip_01.wav, clip_02.wav, … clip_NN.wav.
     """
-    # 1) wipe & recreate clips folder
-    if os.path.exists(CLIPS_FOLDER):
-        shutil.rmtree(CLIPS_FOLDER)
-    os.makedirs(CLIPS_FOLDER)
+    
+    # 1) clips folder already prepared by ensure_clips_folder()
+    #next block is redundant:
+    ## 1) wipe & recreate clips folder
+    #if os.path.exists(CLIPS_FOLDER):
+    #    shutil.rmtree(CLIPS_FOLDER)
+    #os.makedirs(CLIPS_FOLDER)
 
     # 2) build split-points (every start and end time)
     times = []
@@ -240,9 +247,10 @@ def extract_clips_segment(video_file, bad_sections, boost_db=6):
     cmd = (
         f"ffmpeg -hide_banner -loglevel error -y -i \"{video_file}\" "
         f"-vn -acodec pcm_s16le -ac 1 -ar 16000 "
-        f"-f segment -segment_times {segment_times} "
-        f"-segment_start_number 1 {CLIPS_FOLDER}/clip_%02d.wav"
+        f"-f segment -segment_times \"{segment_times}\" "
+        f"-segment_start_number 1 \"{CLIPS_FOLDER}/clip_%02d.wav\""
     )
+    
     print("🔧 extracting audio clips for each bad-word section…")
     subprocess.run(cmd, shell=True)
 
@@ -585,9 +593,12 @@ if __name__ == "__main__":
     output_file = build_and_run_ffmpeg(INPUT_VIDEO, selected_mutes, PRE_BUFFER_MS, POST_BUFFER_MS, OUTPUT_SUFFIX)
 
     if DELETE_ORIGINAL:
-        os.remove(INPUT_VIDEO)
-        print(f"🗑️ Deleted original input file: {INPUT_VIDEO}")
-
+        if os.path.exists(INPUT_VIDEO):
+            os.remove(INPUT_VIDEO)
+            print(f"🗑️ Deleted original input file: {INPUT_VIDEO}")
+        else:
+            print(f"⚠️ Could not delete input — not found: {INPUT_VIDEO}")
+            
     if not KEEP_SUBS and INPUT_SRT and os.path.exists(INPUT_SRT):
         os.remove(INPUT_SRT)
         print(f"🗑️ Deleted subtitle file: {INPUT_SRT}")
