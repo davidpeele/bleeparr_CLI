@@ -1,4 +1,16 @@
-# 🔇 Bleeparr_CLI 1.4.0
+# Bleeparr CLI v1.4.1
+
+A command-line profanity remover for subtitle-based video cleaning.
+
+---
+
+## 🆕 What’s New in v1.4.1
+- Fixed all FFmpeg path handling (files/folders with spaces now work).
+- Removed all `shell=True`; now passing FFmpeg args as safe lists.
+- Improved ENOSPC (no space left on device) message with temp-dir suggestion.
+- Embedded subtitle detection and extraction run before online searches.
+- Added `--subtitle-lang`, `--no-embedded-subs`, and `--dry-run` options.
+
 
 **Bleeparr_CLI** is an automated profanity censorship tool that intelligently detects and mutes (or beeps over) bad words in video files using subtitles and Whisper AI.
 
