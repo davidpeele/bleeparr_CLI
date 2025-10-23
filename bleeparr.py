@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 # -----------------------------------------
 # Imports
 # -----------------------------------------
@@ -14,6 +16,9 @@ from faster_whisper import WhisperModel
 from datetime import timedelta
 from collections import defaultdict
 from difflib import SequenceMatcher
+from pathlib import Path
+import tempfile
+import errno
 
 # -----------------------------------------
 # CLI Parsing
@@ -67,9 +72,26 @@ parser.add_argument("--delete-original", action="store_true", help="Delete origi
 parser.add_argument("--no-keep-subs", action="store_true", help="Delete subtitle file after processing")
 parser.add_argument("--swears", default="swears.txt", help="File containing swear words to censor")
 parser.add_argument("--alert-censoring-off", action="store_true", help="Disable replacing bad‐words with asterisks in all alerts (prints the raw word)")
+parser.add_argument(
+    "--subtitle-lang",
+    default="eng",
+    help="Preferred subtitle language (e.g., eng, spa, fra). Default: eng"
+)
+parser.add_argument(
+    "--no-embedded-subs",
+    action="store_true",
+    help="Skip checking/extracting embedded subtitles"
+)
+
+parser.add_argument(
+    "--dry-run",
+    action="store_true",
+    help="Analyze and plan without writing an edited file or deleting anything"
+)
 
 args = parser.parse_args()
 
+DRY_RUN = args.dry_run
 use_beep = args.beep
 beep_mode = args.beep_mode if args.beep_mode else 'words' if use_beep else None
 if not use_beep and args.beep_mode:
@@ -81,6 +103,7 @@ BLEEPTOOL = [p.strip().upper() for p in args.bleeptool.split("-")]
 DO_S   = "S"   in BLEEPTOOL
 DO_M   = "M"   in BLEEPTOOL
 DO_FSM = "FSM" in BLEEPTOOL
+
 
 # -----------------------------------------
 # Settings (from CLI)
@@ -110,9 +133,10 @@ if custom_temp_dir:
         print(f"❌ Failed to create or access --temp-dir: {base_clips_path}")
         print(f"Error: {e}")
         exit(1)
+    used_custom_temp_dir = True
 else:
     base_clips_path = os.path.dirname(os.path.abspath(INPUT_VIDEO))
-    used_custom_temp_dir = bool(custom_temp_dir)
+    used_custom_temp_dir = False
 
 
 CLIPS_FOLDER = os.path.join(base_clips_path, "clips")
@@ -122,18 +146,94 @@ CLIPS_FOLDER = os.path.join(base_clips_path, "clips")
 # Functions
 # -----------------------------------------
 
+def _run_cmd(cmd_list):
+    """Run a command without shell=True, capture output, never raise."""
+    return subprocess.run(cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False)
+
+def find_and_extract_embedded_subtitle(video_path: str | Path, preferred_lang: str = "eng") -> str | None:
+    """
+    Look for a text-based subtitle stream inside the video (subrip/ass/ssa/mov_text/webvtt).
+    Prefer preferred_lang when present. If found, convert to .srt in a temp dir and return it.
+    """
+    TEXT_CODECS = {"subrip", "ass", "ssa", "mov_text", "webvtt"}
+    video_path = Path(video_path)
+    if not video_path.exists():
+        return None
+
+    probe = _run_cmd([
+        "ffprobe", "-v", "error",
+        "-print_format", "json",
+        "-show_streams",
+        "-select_streams", "s",
+        str(video_path)
+    ])
+    if probe.returncode != 0:
+        return None
+
+    try:
+        data = json.loads(probe.stdout or "{}")
+    except json.JSONDecodeError:
+        return None
+
+    streams = data.get("streams", [])
+    candidates = []
+    for s in streams:
+        codec = (s.get("codec_name") or "").lower()
+        if codec in {"subrip", "ass", "ssa", "mov_text", "webvtt"}:
+            lang = (s.get("tags", {}).get("language") or "").lower()
+            idx  = s.get("index")
+            score = 2 if lang == (preferred_lang or "").lower() else 1
+            candidates.append({"index": idx, "lang": lang or "und", "codec": codec, "score": score})
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda c: (-c["score"], c["index"]))
+    pick = candidates[0]
+
+    tmpdir = Path(tempfile.mkdtemp(prefix="bleeparr_embeds_"))
+    out_srt = tmpdir / f"{video_path.stem}.embedded.{pick['lang']}.srt"
+
+    extract = _run_cmd([
+        "ffmpeg", "-y", "-i", str(video_path),
+        "-map", f"0:{pick['index']}",
+        "-c:s", "srt",
+        str(out_srt)
+    ])
+    if extract.returncode != 0 or not out_srt.exists() or out_srt.stat().st_size == 0:
+        try: shutil.rmtree(tmpdir)
+        except Exception: pass
+        return None
+
+    print(f"📦 Extracted embedded subtitle → {out_srt}")
+    return str(out_srt)
+
+
 def ensure_clips_folder():
     """Ensure the clips folder exists and is empty."""
-    if os.path.exists(CLIPS_FOLDER):
-        for f in os.listdir(CLIPS_FOLDER):
-            os.remove(os.path.join(CLIPS_FOLDER, f))
-    else:
-        os.makedirs(CLIPS_FOLDER)
+    try:
+        if os.path.exists(CLIPS_FOLDER):
+            for f in os.listdir(CLIPS_FOLDER):
+                os.remove(os.path.join(CLIPS_FOLDER, f))
+        else:
+            os.makedirs(CLIPS_FOLDER, exist_ok=True)
+    except OSError as e:
+        if getattr(e, "errno", None) == errno.ENOSPC:  # 28
+            print(f"❌ Not enough space to create or clean clips folder:\n   {CLIPS_FOLDER}")
+            print("👉 Free space on that filesystem OR rerun with a different location, e.g.:")
+            print("   --temp-dir /tmp")
+        else:
+            print(f"❌ Failed to prepare clips folder: {CLIPS_FOLDER}")
+            print(f"Error: {e}")
+        exit(1)
 
+        
 def load_swears(swears_file):
-    """Load swear words into a set."""
-    with open(swears_file, "r") as f:
-        return set(line.strip().lower() for line in f)
+    script_dir = os.path.dirname(os.path.realpath(__file__))
+    swears_path = os.path.join(script_dir, swears_file)
+    with open(swears_path, "r") as f:
+        return set(line.strip() for line in f if line.strip())
+                
 def fuzzy_match(a: str, b: str, threshold: float = 0.8) -> bool:
     """
     Return True if strings a and b are similar enough.
@@ -150,9 +250,32 @@ def censor_word(word):
     else:
         return '*'
 
-def find_or_download_subtitle(video_file):
-    """Try to find an existing subtitle or download and save one, retrying once if empty."""
-    srt_file = os.path.splitext(video_file)[0] + ".srt"
+
+def find_or_download_subtitle(video_file, *, preferred_lang: str = "eng", allow_embedded: bool = True):
+    """
+    Resolution order:
+      1) Existing external .srt or .hi.srt next to the video
+      2) Embedded text subtitles inside the video (converted to .srt) [if allowed]
+      3) Online search/download (Subliminal), retry once if empty
+    Returns the path to an .srt or None if unavailable.
+    """
+    base = os.path.splitext(video_file)[0]
+    possible_files = [base + ".srt", base + ".hi.srt"]
+
+    # 1) Existing external SRT/HI-SRT
+    for f in possible_files:
+        if os.path.exists(f) and os.path.getsize(f) > 0:
+            print(f"📄 Found existing subtitle: {f}")
+            return f
+
+    # 2) Embedded text subs → extract as SRT
+    if allow_embedded:
+        embedded = find_and_extract_embedded_subtitle(video_file, preferred_lang=preferred_lang)
+        if embedded and os.path.exists(embedded) and os.path.getsize(embedded) > 0:
+            return embedded
+
+    # 3) Online search/download via Subliminal (2 tries at most)
+    srt_file = base + ".srt"
 
     def download_subtitle_to_file():
         try:
@@ -160,13 +283,16 @@ def find_or_download_subtitle(video_file):
             from babelfish import Language
             region.configure('dogpile.cache.memory')
             video = Video.fromname(video_file)
-            subtitles = download_best_subtitles([video], {Language('eng')})
+            subtitles = download_best_subtitles([video], {Language(preferred_lang or 'eng')})
             if subtitles and video in subtitles and subtitles[video]:
                 subtitle = subtitles[video][0]
                 content = subtitle.content
                 if content:
                     if isinstance(content, bytes):
-                        content = content.decode('utf-8')
+                        try:
+                            content = content.decode('utf-8')
+                        except Exception:
+                            content = content.decode('latin1', errors='ignore')
                     with open(srt_file, "w", encoding="utf-8") as f:
                         f.write(content)
                     return True
@@ -175,28 +301,23 @@ def find_or_download_subtitle(video_file):
             print(f"⚠️ Subliminal error: {e}")
             return False
 
-    if os.path.exists(srt_file):
-        if os.path.getsize(srt_file) == 0:
-            print(f"❌ Found existing subtitle, but it is empty: {srt_file}")
-            return None
-        print(f"📄 Found existing subtitle: {srt_file}")
-        return srt_file
-    else:
-        print(f"🌐 No .srt file found. Attempting to download subtitles...")
-
-        success = download_subtitle_to_file()
-        if not success or os.path.getsize(srt_file) == 0:
-            print(f"⚠️ Subtitle file empty after first download attempt. Trying again...")
+    print(f"🌐 No local/embedded subtitle found. Attempting to download subtitles (lang={preferred_lang or 'eng'})...")
+    success = download_subtitle_to_file()
+    if not success or not os.path.exists(srt_file) or os.path.getsize(srt_file) == 0:
+        print(f"⚠️ Subtitle file empty after first download attempt. Trying again...")
+        try:
             if os.path.exists(srt_file):
                 os.remove(srt_file)
+        except Exception:
+            pass
+        success = download_subtitle_to_file()
+        if not success or not os.path.exists(srt_file) or os.path.getsize(srt_file) == 0:
+            print("❌ Subtitle download failed after two attempts. Cannot continue.")
+            return None
 
-            success = download_subtitle_to_file()
-            if not success or os.path.getsize(srt_file) == 0:
-                print("❌ Subtitle download failed after two attempts. Cannot continue.")
-                return None
+    print(f"✅ Downloaded and saved subtitle: {srt_file}")
+    return srt_file
 
-        print(f"✅ Downloaded and saved subtitle: {srt_file}")
-        return srt_file
 
 def parse_subtitles(subtitle_file, swears):
     """Parse .srt file and return a list of bad sections."""
@@ -223,10 +344,13 @@ def extract_clips_segment(video_file, bad_sections, boost_db=6):
     isolate exactly those subtitle‐defined segments:
       clip_01.wav, clip_02.wav, … clip_NN.wav.
     """
-    # 1) wipe & recreate clips folder
-    if os.path.exists(CLIPS_FOLDER):
-        shutil.rmtree(CLIPS_FOLDER)
-    os.makedirs(CLIPS_FOLDER)
+    
+    # 1) clips folder already prepared by ensure_clips_folder()
+    #next block is redundant:
+    ## 1) wipe & recreate clips folder
+    #if os.path.exists(CLIPS_FOLDER):
+    #    shutil.rmtree(CLIPS_FOLDER)
+    #os.makedirs(CLIPS_FOLDER)
 
     # 2) build split-points (every start and end time)
     times = []
@@ -240,9 +364,10 @@ def extract_clips_segment(video_file, bad_sections, boost_db=6):
     cmd = (
         f"ffmpeg -hide_banner -loglevel error -y -i \"{video_file}\" "
         f"-vn -acodec pcm_s16le -ac 1 -ar 16000 "
-        f"-f segment -segment_times {segment_times} "
-        f"-segment_start_number 1 {CLIPS_FOLDER}/clip_%02d.wav"
+        f"-f segment -segment_times \"{segment_times}\" "
+        f"-segment_start_number 1 \"{CLIPS_FOLDER}/clip_%02d.wav\""
     )
+    
     print("🔧 extracting audio clips for each bad-word section…")
     subprocess.run(cmd, shell=True)
 
@@ -449,19 +574,13 @@ def build_and_run_ffmpeg(input_file, mute_points, pre_buffer_ms, post_buffer_ms,
             beep = f"beep{i}"
             dbeep = f"dbeep{i}"
 
-            filter_parts.append(
-                f"aevalsrc=sin(2*PI*1000*t):d={duration}:s=44100[{beep}]"
-            )
-            filter_parts.append(
-                f"[{beep}]adelay={delay_ms}|{delay_ms}[{dbeep}]"
-            )
+            filter_parts.append(f"aevalsrc=sin(2*PI*1000*t):d={duration}:s=44100[{beep}]")
+            filter_parts.append(f"[{beep}]adelay={delay_ms}|{delay_ms}[{dbeep}]")
             beep_labels.append(f"[{dbeep}]")
 
         # Step 3: mix muted audio with all beep tracks
         all_inputs = f"[{current_label}]" + "".join(beep_labels)
-        filter_parts.append(
-            f"{all_inputs}amix=inputs={len(beep_labels)+1}:duration=longest[outa]"
-        )
+        filter_parts.append(f"{all_inputs}amix=inputs={len(beep_labels)+1}:duration=longest[outa]")
 
         filter_complex = ";".join(filter_parts)
         cmd = (
@@ -477,22 +596,29 @@ def build_and_run_ffmpeg(input_file, mute_points, pre_buffer_ms, post_buffer_ms,
             end = m["end"] + (post_buffer_ms / 1000.0)
             filters.append(f"volume=enable='between(t,{start},{end})':volume=0")
 
-        filter_str = ",".join(filters)
+        filter_str = ",".join(filters) if filters else "anull"
         cmd = (
             f"ffmpeg -hide_banner -loglevel error -y -i \"{input_file}\" "
             f"-af \"{filter_str}\" -c:v copy \"{output_file}\""
         )
 
-    print(f"🔧 Running FFmpeg command to mute bad words{' with beeps' if use_beep else ''}…")
-    subprocess.run(cmd, shell=True)
-    return output_file
     
-    output_file = os.path.splitext(input_file)[0] + f" {output_suffix}.mkv"
-    filter_str = ",".join(filters)
-    cmd = f"ffmpeg -hide_banner -loglevel error -y -i \"{input_file}\" -af \"{filter_str}\" -c:v copy \"{output_file}\""
-    print(f"🔧 Running FFmpeg command to mute bad words...")
-    subprocess.run(cmd, shell=True)
+    print(f"🔧 Running FFmpeg command to mute bad words{' with beeps' if use_beep else ''}…")
+    result = subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    
+    if result.returncode != 0:
+        err = (result.stderr or "").lower()
+        if "no space left on device" in err:
+            print("❌ FFmpeg failed: No space left on device while writing output.")
+            print("👉 Free space on the target drive OR rerun using a different temp location, e.g.:")
+            print("   --temp-dir /tmp")
+        else:
+            print("❌ FFmpeg failed. Last lines from stderr:")
+            print("\n".join(result.stderr.strip().splitlines()[-20:]))
+        exit(1)
+    
     return output_file
+
 
 def cleanup_temp_clips(clips_folder):
     """Delete the entire clips folder and all contents after processing."""
@@ -508,16 +634,61 @@ if __name__ == "__main__":
     start_time = time.time()
     print("🚀 Starting Bleeparr...")
 
-    ensure_clips_folder()
     swears = load_swears(SWEARS_FILE)
 
     if not INPUT_SRT:
-        INPUT_SRT = find_or_download_subtitle(INPUT_VIDEO)
+        INPUT_SRT = find_or_download_subtitle(
+            INPUT_VIDEO,
+            preferred_lang=args.subtitle_lang,
+            allow_embedded=not args.no_embedded_subs
+        )
         if not INPUT_SRT:
-            print("❌ No subtitles found or could not download. Exiting.")
+            print("❌ No subtitles found (local/embedded/online). Exiting.")
             exit(1)
+    
 
     bad_sections = parse_subtitles(INPUT_SRT, swears)
+    
+    if not bad_sections:
+        print("✅ No bad words found in subtitles. Skipping Whisper and FFmpeg.")
+    
+        if DRY_RUN:
+            print("🧪 Dry run: would have renamed the file and possibly deleted the subtitle. Exiting without changes.")
+            exit(0)
+    
+        # Rename original video to match output style
+        new_path = os.path.splitext(INPUT_VIDEO)[0] + f" {OUTPUT_SUFFIX}" + os.path.splitext(INPUT_VIDEO)[1]
+        os.rename(INPUT_VIDEO, new_path)
+        print(f"📁 Renamed input file to: {new_path}")
+    
+        # Remove subtitle if requested
+        if not KEEP_SUBS and INPUT_SRT and os.path.exists(INPUT_SRT):
+            os.remove(INPUT_SRT)
+            print(f"🗑️ Deleted subtitle file: {INPUT_SRT}")
+    
+        print("\n🎉 Bleeparr finished successfully (no changes needed).")
+        exit(0)
+    
+    if DRY_RUN:
+        # Plan-only: use full subtitle segments as the conservative plan
+        planned = [{
+            "start": sec["start"],
+            "end": sec["end"],
+            "words": sec["words"]
+        } for sec in bad_sections]
+    
+        print(f"🧪 Dry run: would process {len(planned)} subtitle segment(s).")
+        for i, seg in enumerate(planned, 1):
+            duration = seg["end"] - seg["start"]
+            masked = ", ".join('*' * len(w) if not ALERT_CENSORING_OFF else w for w in seg["words"])
+            print(f"  • Segment {i}: {seg['start']:.2f}s → {seg['end']:.2f}s (dur {duration:.2f}s)  [{masked}]")
+    
+        print("🧪 Dry run: would then run Whisper (small/medium as configured) and FFmpeg to apply mutes/beeps.")
+        print("🧪 Dry run: no files were created/renamed/deleted.")
+        exit(0)
+    
+    # only create clips folder when we actually need it (not in --dry-run)
+    ensure_clips_folder()
     extract_clips_segment(INPUT_VIDEO, bad_sections, boost_db=BOOST_DB)
 
     # --- 1) Small Whisper pass over EVERY clip ---
@@ -584,10 +755,13 @@ if __name__ == "__main__":
     #this line to use selected_mutes:
     output_file = build_and_run_ffmpeg(INPUT_VIDEO, selected_mutes, PRE_BUFFER_MS, POST_BUFFER_MS, OUTPUT_SUFFIX)
 
-    if DELETE_ORIGINAL:
-        os.remove(INPUT_VIDEO)
-        print(f"🗑️ Deleted original input file: {INPUT_VIDEO}")
-
+    if DELETE_ORIGINAL and 'output_file' in locals() and os.path.exists(output_file):
+        if os.path.exists(INPUT_VIDEO):
+            os.remove(INPUT_VIDEO)
+            print(f"🗑️ Deleted original input file: {INPUT_VIDEO}")
+        else:
+            print(f"⚠️ Could not delete input — not found: {INPUT_VIDEO}")
+            
     if not KEEP_SUBS and INPUT_SRT and os.path.exists(INPUT_SRT):
         os.remove(INPUT_SRT)
         print(f"🗑️ Deleted subtitle file: {INPUT_SRT}")
