@@ -1,9 +1,16 @@
-# 🔇 Bleeparr_CLI 1.3
+# 🔇 Bleeparr_CLI 1.4.0
 
 **Bleeparr_CLI** is an automated profanity censorship tool that intelligently detects and mutes (or beeps over) bad words in video files using subtitles and Whisper AI.
 
 🚀 Built for creators, parents, teachers, and anyone who wants cleaner media.
 
+## What's New in v1.4.0
+- Prefer **embedded text subtitles** before online search (subrip/ass/ssa/mov_text/webvtt)
+- New flags: `--subtitle-lang`, `--no-embedded-subs`, `--dry-run`
+- Friendlier ENOSPC (“no space left on device”) messages with `--temp-dir` suggestion
+- Avoid creating `clips/` on dry-run
+- Tidied FFmpeg runner (removed duplicate/unreachable code)
+- 
 ## What's New in v1.3
 
 - ✅ Added `--beep` mode to replace mute with a tone
@@ -88,6 +95,16 @@ This will:
 | `--delete-original`     | Delete the input video after success |
 | `--no-keep-subs`        | Delete subtitle file after processing |
 | `--alert-censoring-off` | Show uncensored words in terminal/log output |
+### New Flags (v1.4.0)
+
+- `--subtitle-lang`  
+  Preferred subtitle language code (e.g., `eng`, `spa`, `fra`). Default: `eng`.
+
+- `--no-embedded-subs`  
+  Skip checking/extracting embedded subtitles; go straight to external/online.
+
+- `--dry-run`  
+  Analyze and plan without creating clips or running FFmpeg; no files are renamed or deleted.
 
 ### 🔊 Audio Control Options
 
@@ -107,6 +124,9 @@ This will:
 ---
 
 ## 📌 Examples
+Prefer English subs, try embedded first (default), plan-only:
+```bash
+python3 bleeparr.py --input "/path/to/video.mkv" --subtitle-lang eng --dry-run
 
 Basic mute (default):
 ```bash
