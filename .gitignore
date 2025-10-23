@@ -1,0 +1,14 @@
+swears.txt
+
+
+# Local only
+*.log
+*.tsv
+*.mp4
+*.srt
+*.old
+logs/
+.git-credentials
+.gitconfig
+swears.txt
+swears.private.txt
