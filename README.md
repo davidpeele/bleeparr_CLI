@@ -1,9 +1,18 @@
-# 🔇 Bleeparr_CLI 1.2
+# 🔇 Bleeparr_CLI 1.3
 
 **Bleeparr_CLI** is an automated profanity censorship tool that intelligently detects and mutes (or beeps over) bad words in video files using subtitles and Whisper AI.
 
 🚀 Built for creators, parents, teachers, and anyone who wants cleaner media.
 
+## What's New in v1.3
+
+- ✅ Added `--beep` mode to replace mute with a tone
+- ✅ Choose tone mode with `--beep-mode words` or `both`
+- ✅ Default is mute-only (no tone)
+- ✅ New `--temp-dir` option to set location for clip processing
+- ✅ Automatically deletes temp clips folder unless `--keep-clips` is set
+- ✅ All paths (input, output, temp) are now safe across folders with spaces
+- ✅ `swears.txt` is always resolved relative to the script location
 ---
 
 ## ✨ What's New in v1.2
@@ -123,7 +132,18 @@ Custom clips folder:
 ```bash
 python3 bleeparr.py --input movie.mkv --temp-dir /tmp/clips --retain-clips
 ```
-
+🧪 Example CLI Usage
+```bash
+bleeparr --input "My Show.mkv" --beep --beep-mode both
+```
+🔧 Temp Directory Example
+```bash
+bleeparr --input "My Show.mkv" --temp-dir /mnt/ramdisk/
+```
+🗂 Keep Processed Clips (instead of deleting them)
+```bash
+bleeparr --input "My Show.mkv" --keep-clips
+```
 ---
 
 ## 🧠 How It Works
