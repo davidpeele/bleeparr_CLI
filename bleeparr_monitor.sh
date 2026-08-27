@@ -29,10 +29,10 @@ if [[ -n "$VIDEO" ]]; then
   # Send email only when a video was processed
   (
     echo "Subject: $SUBJECT"
-    echo "To: davidpeele@gmail.com"
+    echo "To: YOUR@EMIAL.HERE"
     echo
     cat "$TMPLOG"
-  ) | msmtp davidpeele@gmail.com
+  ) | msmtp YOUR@EMIAL.HERE
 
 else
   echo "🕒 $(date): No matching videos found." >> "$LOGFILE"
